@@ -2274,9 +2274,15 @@ const DADOS_DEPUTADOS =
     <div class="card mapa">
       <div class="mapa-top">
         <div class="titulo" id="mapaTitulo">Mapa de votação</div>
-        <div class="seg" id="visaoSeg">
-          <button data-v="municipio" class="active">Municípios</button>
-          <button data-v="meso">Mesorregiões</button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap">
+          <div class="seg" id="modoSeg">
+            <button data-m="intensidade" class="active">Intensidade</button>
+            <button data-m="campeao">Mais votado</button>
+          </div>
+          <div class="seg" id="visaoSeg">
+            <button data-v="municipio" class="active">Municípios</button>
+            <button data-v="meso">Mesorregiões</button>
+          </div>
         </div>
       </div>
       <div id="svgbox"></div>
@@ -2312,7 +2318,9 @@ const DADOS_DEPUTADOS =
     e estadual (use o filtro de situação para ver suplentes e não eleitos). Votos por município = soma dos
     votos nominais das zonas eleitorais. Malha municipal e mesorregiões: IBGE.
     “Dependência regional” = % dos votos do candidato vindos da sua mesorregião principal.
-    Funciona offline — basta abrir o arquivo no navegador.
+    No modo “Mais votado”, cada município (ou mesorregião) recebe a cor do partido do candidato
+    mais votado ali, considerando os filtros ativos; os percentuais são sobre o total de votos
+    nominais do recorte naquele território. Funciona offline — basta abrir o arquivo no navegador.
   </footer>
 </div>
 
@@ -2408,6 +2416,7 @@ const state = {
   cargo:'TODOS', partido:'TODOS', sit:'eleito', busca:'',
   sel:null,            // registro selecionado (objeto) ou null
   visao:'municipio',
+  modo:'intensidade',  // 'intensidade' (escala de votos) ou 'campeao' (mais votado)
   sortK:'total', sortDir:-1
 };
 
@@ -2478,6 +2487,12 @@ SC_GEOJSON.features.forEach(f=>{
   path.addEventListener('mousemove', ev=>moveTooltip(ev,p));
   path.addEventListener('mouseenter', ev=>{ enterMuni(p); moveTooltip(ev,p); });
   path.addEventListener('mouseleave', ()=>leaveMuni(p));
+  path.addEventListener('click', ()=>{
+    if(state.modo!=='campeao' || !campeoes) return;
+    const top = state.visao==='meso' ? campeoes.porMeso[p.meso]
+                                     : (campeoes.porMuni.get(p.cod)||[]);
+    if(top.length) selecionar(top[0].r);
+  });
 });
 const labelsMeso=[];
 MESOS.forEach(m=>{
@@ -2507,6 +2522,7 @@ function calcularMapa(){
 }
 
 function pintarMapa(){
+  if(state.modo==='campeao'){ pintarCampeoes(); return; }
   calcularMapa();
   const meso = state.visao==='meso';
   pathPorCod.forEach((path,cod)=>{
@@ -2539,6 +2555,94 @@ function renderLegenda(max){
       : '');
 }
 
+/* ---------- modo "mais votado" ---------- */
+const CORES_PARTIDO = {
+  'PT':'#e03131','PL':'#1f5bd6','MDB':'#37a24a','PMDB':'#37a24a','PSD':'#f59f00',
+  'PP':'#4dabf7','PSDB':'#15aabf','UNIAO':'#748ffc','REPUBLICANOS':'#0b7285',
+  'PRB':'#0b7285','PDT':'#d6336c','PSB':'#ff922b','PSL':'#364fc7','PR':'#364fc7',
+  'NOVO':'#f76707','PSC':'#5c940d','PODE':'#9775fa','PTN':'#9775fa','PTB':'#a61e4d',
+  'PSOL':'#ffd43b','PCDOB':'#c92a2a','CIDADANIA':'#e64980','PPS':'#e64980',
+  'PV':'#66a80f','SOLIDARIEDADE':'#e8590c','SD':'#e8590c','AVANTE':'#7048e8',
+  'PATRIOTA':'#2f9e44','PEN':'#2f9e44','PROS':'#1098ad','DEM':'#5f3dc4','REDE':'#0ca678'
+};
+function corPartido(sg){
+  const k = norm(sg).replace(/ /g,'');
+  if(CORES_PARTIDO[k]) return CORES_PARTIDO[k];
+  let h=0; for(const c of k) h=(h*31+c.charCodeAt(0))>>>0;
+  return 'hsl('+(h%360)+',55%,52%)';
+}
+function pushTop(arr, item){      // mantém os 3 maiores, em ordem decrescente
+  let i=arr.length;
+  while(i>0 && arr[i-1].v<item.v) i--;
+  arr.splice(i,0,item);
+  if(arr.length>3) arr.pop();
+}
+let campeoes=null;                // {porMuni, somaMuni, porMeso, somaMeso}
+function calcularCampeoes(){
+  const porMuni=new Map(), somaMuni=new Map(), porMeso={}, somaMeso={};
+  MESOS.forEach(m=>{ porMeso[m]=[]; somaMeso[m]=0; });
+  filtrados().forEach(r=>{
+    r.votos.forEach((v,cod)=>{
+      somaMuni.set(cod,(somaMuni.get(cod)||0)+v);
+      let arr=porMuni.get(cod); if(!arr){ arr=[]; porMuni.set(cod,arr); }
+      pushTop(arr,{r,v});
+    });
+    MESOS.forEach(m=>{
+      const v=r.mesoTot[m];
+      if(v>0){ somaMeso[m]+=v; pushTop(porMeso[m],{r,v}); }
+    });
+  });
+  campeoes={porMuni,somaMuni,porMeso,somaMeso};
+}
+function rotuloFiltros(){
+  const s={eleito:' · entre eleitos',suplente:' · entre suplentes',
+           nao:' · entre não eleitos',TODAS:' · todos os candidatos'}[state.sit]||'';
+  const c=state.cargo==='TODOS'?'':' · dep. '+state.cargo.toLowerCase();
+  return s+c;
+}
+function pintarCampeoes(){
+  calcularCampeoes();
+  const meso = state.visao==='meso';
+  pathPorCod.forEach((path,cod)=>{
+    const top = meso ? campeoes.porMeso[geoPorCod.get(cod).meso]
+                     : (campeoes.porMuni.get(cod)||[]);
+    path.setAttribute('fill', top.length ? corPartido(top[0].r.partido) : COR_ZERO);
+    path.classList.remove('top-muni');
+  });
+  const contagem={};
+  if(meso){
+    MESOS.forEach(m=>{ const t=campeoes.porMeso[m];
+      if(t.length) contagem[t[0].r.partido]=(contagem[t[0].r.partido]||0)+1; });
+  } else {
+    campeoes.porMuni.forEach(t=>{
+      if(t.length) contagem[t[0].r.partido]=(contagem[t[0].r.partido]||0)+1; });
+  }
+  labelsMeso.forEach(t=>t.style.display = meso?'':'none');
+  document.getElementById('mapaTitulo').textContent =
+    'Mais votado por '+(meso?'mesorregião':'município')+' · '+state.ano+rotuloFiltros();
+  const el=document.getElementById('legenda');
+  el.innerHTML = Object.entries(contagem).sort((a,b)=>b[1]-a[1]).map(([sg,n])=>
+      '<span><span class="sw" style="background:'+corPartido(sg)+'"></span><b>'+sg+'</b> · '+n+'</span>'
+    ).join('') +
+    '<span style="opacity:.8">cor = partido do mais votado · passe o mouse para o top 3 · clique para abrir o perfil</span>';
+}
+function tooltipCampeao(p){
+  const meso = state.visao==='meso';
+  const top = meso ? campeoes.porMeso[p.meso] : (campeoes.porMuni.get(p.cod)||[]);
+  const den = meso ? campeoes.somaMeso[p.meso] : (campeoes.somaMuni.get(p.cod)||0);
+  let html='<b>'+(meso?p.meso:p.nome)+'</b>'+
+    (meso?'':' <span class="tt-muted">· '+p.meso+'</span>');
+  if(!top.length) return html+'<br><span class="tt-muted">Sem votos no recorte atual</span>';
+  const pos=['1º','2º','3º'];
+  top.forEach((t,i)=>{
+    html+='<br><span class="tt-muted">'+pos[i]+'</span> '+t.r.nome+
+      ' <span class="tt-muted">('+t.r.partido+
+      (state.cargo==='TODOS'?' · '+(t.r.cargo==='FEDERAL'?'Fed':'Est'):'')+')</span> — '+
+      fmt.format(t.v)+(den>0?' · '+fmtPct(t.v/den*100):'');
+  });
+  return html;
+}
+
 /* ---------- tooltip ---------- */
 const tt=document.getElementById('tooltip');
 function enterMuni(p){
@@ -2551,7 +2655,9 @@ function leaveMuni(p){
 }
 function moveTooltip(ev,p){
   let html;
-  if(state.visao==='meso'){
+  if(state.modo==='campeao'){
+    html=tooltipCampeao(p);
+  } else if(state.visao==='meso'){
     const v=mesoVals[p.meso]||0;
     const n=gruposMeso.get(p.meso).querySelectorAll('.muni').length;
     html='<b>'+p.meso+'</b> <span class="tt-muted">· '+n+' municípios</span><br>'+
@@ -2763,6 +2869,14 @@ document.getElementById('visaoSeg').querySelectorAll('button').forEach(b=>{
   b.onclick=()=>{
     state.visao=b.dataset.v;
     document.getElementById('visaoSeg').querySelectorAll('button')
+      .forEach(x=>x.classList.toggle('active',x===b));
+    pintarMapa();
+  };
+});
+document.getElementById('modoSeg').querySelectorAll('button').forEach(b=>{
+  b.onclick=()=>{
+    state.modo=b.dataset.m;
+    document.getElementById('modoSeg').querySelectorAll('button')
       .forEach(x=>x.classList.toggle('active',x===b));
     pintarMapa();
   };
