@@ -2806,6 +2806,12 @@ const DADOS_DEPUTADOS =
   .muni:hover{filter:brightness(1.45)}
   g.hovmeso .muni{filter:brightness(1.35)}
   .muni.top-muni{stroke:var(--amber); stroke-width:2.2}
+  .muni.cidade-sel{stroke:#fff; stroke-width:2.8}
+  .bar-row.clic{cursor:pointer; border-radius:4px}
+  .bar-row.clic:hover .bl{color:var(--accent)}
+  .bar-row.atual .bl{color:var(--accent); font-weight:700}
+  .cidade-link{float:right; cursor:pointer; color:var(--accent); font-size:12px; font-weight:400;
+    text-transform:none; letter-spacing:0}
   .meso-label{font-size:17px; font-weight:700; fill:#f1f5fa; paint-order:stroke; stroke:#0b0f17;
     stroke-width:3.5; pointer-events:none}
   .legenda{display:flex; align-items:center; gap:10px; padding:6px 16px 14px; font-size:11.5px; color:var(--muted); flex-wrap:wrap}
@@ -2913,6 +2919,9 @@ const DADOS_DEPUTADOS =
         <option>Vale do Itajaí</option><option>Grande Florianópolis</option><option>Sul</option>
       </select>
       <input type="search" id="busca" placeholder="Buscar deputado…">
+      <input type="search" id="buscaCidade" list="listaCidades" placeholder="Buscar cidade…"
+             autocomplete="off" aria-label="Buscar cidade">
+      <datalist id="listaCidades"></datalist>
     </div>
   </header>
 
@@ -5330,6 +5339,7 @@ gruposC.forEach(arr=>{
 const state = {
   ano: ANOS[ANOS.length-1],
   cargo:'TODOS', partido:'TODOS', sit:'eleito', regiao:'TODAS', busca:'',
+  cidade:null,         // cod IBGE da cidade buscada ou null
   sel:null,            // registro selecionado (objeto) ou null
   aba:'votacao',       // 'votacao' ou 'gastos'
   visao:'municipio',
@@ -5441,7 +5451,8 @@ SC_GEOJSON.features.forEach(f=>{
   path.addEventListener('mouseenter', ev=>{ enterMuni(p); moveTooltip(ev,p); });
   path.addEventListener('mouseleave', ()=>leaveMuni(p));
   path.addEventListener('click', ()=>{
-    if(state.modo!=='campeao' || !campeoes) return;
+    if(state.modo!=='campeao'){ if(state.visao==='municipio') selecionarCidade(p.cod); return; }
+    if(!campeoes) return;
     const top = state.visao==='meso' ? campeoes.porMeso[p.meso]
                                      : (campeoes.porMuni.get(p.cod)||[]);
     if(top.length) selecionar(top[0].r);
@@ -5489,6 +5500,7 @@ function pintarMapa(){
     const p = pathPorCod.get(state.sel.topMuni.cod);
     if(p){ p.classList.add('top-muni'); p.parentNode.appendChild(p); }
   }
+  marcarCidade();
   labelsMeso.forEach(t=>t.style.display = meso?'':'none');
   document.getElementById('mapaTitulo').textContent =
     (state.sel ? state.sel.nome+' · '+state.ano : 'Todos os deputados filtrados · '+state.ano)
@@ -5570,6 +5582,7 @@ function pintarCampeoes(){
     campeoes.porMuni.forEach(t=>{
       if(t.length) contagem[t[0].r.partido]=(contagem[t[0].r.partido]||0)+1; });
   }
+  marcarCidade();
   labelsMeso.forEach(t=>t.style.display = meso?'':'none');
   document.getElementById('mapaTitulo').textContent =
     'Mais votado por '+(meso?'mesorregião':'município')+' · '+state.ano+rotuloFiltros();
@@ -5629,6 +5642,94 @@ function moveTooltip(ev,p){
   if(x+r.width>innerWidth-8) x=ev.clientX-r.width-m;
   if(y+r.height>innerHeight-8) y=ev.clientY-r.height-m;
   tt.style.left=x+'px'; tt.style.top=y+'px';
+}
+
+/* ---------- busca de cidade ---------- */
+function marcarCidade(){
+  pathPorCod.forEach(path=>path.classList.remove('cidade-sel'));
+  const p = state.cidade && pathPorCod.get(state.cidade);
+  if(p){ p.classList.add('cidade-sel'); p.parentNode.appendChild(p); }
+}
+function selecionarCidade(cod){
+  state.cidade = cod || null;
+  document.getElementById('buscaCidade').value = cod ? geoPorCod.get(cod).nome : '';
+  renderPainel(); pintarMapa();
+}
+/* candidatos do recorte com votos na cidade, do mais ao menos votado ali */
+function rankingCidade(cod){
+  return filtrados().filter(r=>r.votos.has(cod))
+    .map(r=>({r, v:r.votos.get(cod)})).sort((a,b)=>b.v-a.v);
+}
+function linhaCidade(t,i,maxV,den,atual){
+  return '<div class="bar-row wide clic'+(i===0?' top1':'')+(atual?' atual':'')+'" data-idx="'+t.r.idx+'">'+
+    '<div class="bl" title="'+t.r.nome+' ('+t.r.partido+')">'+(i+1)+'. '+t.r.nome+
+    ' <span style="color:var(--muted)">· '+t.r.partido+
+    (state.cargo==='TODOS'?' · '+(t.r.cargo==='FEDERAL'?'Fed':'Est'):'')+'</span></div>'+
+    '<div class="bt"><div class="bf" style="width:'+(t.v/maxV*100).toFixed(1)+'%"></div></div>'+
+    '<div class="bv">'+fmt.format(t.v)+' · '+fmtPct(den>0?t.v/den*100:0)+'</div></div>';
+}
+function ligarCliquesCidade(el){
+  el.querySelectorAll('.bar-row.clic').forEach(row=>{
+    row.onclick=()=>selecionar(registros[Number(row.dataset.idx)]);
+  });
+  const x=el.querySelector('.cidade-link');
+  if(x) x.onclick=()=>selecionarCidade(null);
+}
+function renderPainelCidade(el){
+  const g=geoPorCod.get(state.cidade);
+  const rk=rankingCidade(state.cidade);
+  const den=rk.reduce((s,t)=>s+t.v,0);
+  const maxV=rk.length?rk[0].v:1;
+  const porPartido={};
+  rk.forEach(t=>porPartido[t.r.partido]=(porPartido[t.r.partido]||0)+t.v);
+  const partidos=Object.entries(porPartido).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  const maxP=partidos.length?partidos[0][1]:1;
+  const LIM=30;
+  el.innerHTML=
+    '<div class="head"><div class="nome">'+g.nome+'<span class="cidade-link">✕ limpar cidade</span></div><div class="badges">'+
+      '<span class="badge">'+g.meso+'</span><span class="badge">'+state.ano+'</span></div></div>'+
+    '<div class="cards2">'+
+      '<div class="stat"><div class="k">Votos no recorte</div><div class="v">'+fmt.format(den)+'</div>'+
+        '<div class="s">'+rotuloFiltros().replace(/^ · /,'')+'</div></div>'+
+      '<div class="stat"><div class="k">Candidatos votados</div><div class="v">'+rk.length+'</div>'+
+        '<div class="s">com ao menos 1 voto aqui</div></div>'+
+      '<div class="stat"><div class="k">Mais votado</div><div class="v" style="font-size:13.5px">'+
+        (rk.length?rk[0].r.nome:'—')+'</div>'+
+        '<div class="s">'+(rk.length?rk[0].r.partido+' · '+fmt.format(rk[0].v)+' votos':'')+'</div></div>'+
+      '<div class="stat"><div class="k">Partido mais votado</div><div class="v" style="font-size:13.5px">'+
+        (partidos.length?partidos[0][0]:'—')+'</div>'+
+        '<div class="s">'+(partidos.length?fmtPct(den>0?partidos[0][1]/den*100:0)+' dos votos do recorte':'')+'</div></div>'+
+    '</div>'+
+    '<div class="sec"><h3>Ranking na cidade'+(rk.length>LIM?' · top '+LIM+' de '+rk.length:'')+'</h3>'+
+      (rk.length ? rk.slice(0,LIM).map((t,i)=>linhaCidade(t,i,maxV,den,false)).join('')
+                 : '<div class="placeholder">Nenhum candidato do recorte atual teve votos aqui.</div>')+
+      (rk.length?'<div style="font-size:11px;color:var(--muted);margin-top:6px">% sobre os votos nominais do recorte na cidade · clique num nome para abrir o perfil'+
+        (state.cargo==='TODOS'?' · com todos os cargos, federais e estaduais aparecem juntos (cada eleitor vota nos dois) — filtre por cargo para comparar só um':'')+'</div>':'')+
+    '</div>'+
+    (partidos.length?'<div class="sec"><h3>Votos por partido</h3>'+partidos.map(([sg,v],i)=>
+      '<div class="bar-row"><div class="bl">'+sg+'</div><div class="bt"><div class="bf" style="width:'+
+      (v/maxP*100).toFixed(1)+'%;background:'+corPartido(sg)+'"></div></div><div class="bv">'+
+      fmt.format(v)+' · '+fmtPct(den>0?v/den*100:0)+'</div></div>').join('')+'</div>':'');
+  ligarCliquesCidade(el);
+}
+/* trecho do perfil do deputado quando há cidade buscada */
+function secaoCidadeDeputado(r){
+  const g=geoPorCod.get(state.cidade);
+  const v=r.votos.get(state.cidade)||0;
+  const rk=rankingCidade(state.cidade);
+  const pos=rk.findIndex(t=>t.r===r);
+  const den=rk.reduce((s,t)=>s+t.v,0);
+  let html='<div class="sec"><h3>Em '+g.nome+'<span class="cidade-link">✕ limpar cidade</span></h3>';
+  if(!v) return html+'<div style="color:var(--muted);font-size:12.5px">Sem votos registrados nesta cidade.</div></div>';
+  html+='<div style="font-size:13px;margin-bottom:8px"><b>'+fmt.format(v)+'</b> votos · '+
+    fmtPct(r.total>0?v/r.total*100:0)+' do total dele'+
+    (pos>=0?' · <b>'+(pos+1)+'º</b> de '+rk.length+' na cidade ('+rotuloFiltros().replace(/^ · /,'')+')':'')+'</div>';
+  if(pos>=0){
+    const maxV=rk[0].v;
+    const ini=Math.max(0,Math.min(pos-2,rk.length-5));
+    html+=rk.slice(ini,ini+5).map((t,j)=>linhaCidade(t,ini+j,maxV,den,t.r===r)).join('');
+  }
+  return html+'</div>';
 }
 
 /* ---------- lista de deputados ---------- */
@@ -5800,12 +5901,14 @@ function renderPainel(){
   const el=document.getElementById('painel');
   if(state.aba==='gastos'){ renderPainelG(el); return; }
   if(state.aba==='campanha'){ renderPainelC(el); return; }
+  if(!state.sel && state.cidade){ renderPainelCidade(el); return; }
   if(!state.sel){
     const fs=filtrados();
     const tot=fs.reduce((s,r)=>s+r.total,0);
     el.innerHTML='<h2>Painel do deputado</h2><div class="placeholder">'+
       'Selecione um deputado na lista, no mapa de calor ou na tabela para ver o perfil completo: '+
       'total de votos, ranking, top 10 municípios, evolução entre eleições e dependência regional.<br><br>'+
+      'Para ver quem foi mais votado numa cidade, use <b>Buscar cidade…</b> ou clique no município no mapa.<br><br>'+
       'No momento o mapa mostra a <b>soma dos votos</b> dos <b>'+fs.length+' candidatos filtrados</b> em '+
       state.ano+' ('+fmt.format(tot)+' votos na base).</div>';
     return;
@@ -5870,9 +5973,11 @@ function renderPainel(){
       '<div class="track"><div class="fill" style="width:'+Math.min(100,r.mesoPct).toFixed(1)+'%;background:'+nivel[1]+'"></div></div>'+
       '<div style="font-size:11px;color:var(--muted);margin-top:6px">% dos votos vindos da mesorregião principal · ≥60% alta · 40–60% média · &lt;40% baixa</div>'+
     '</div></div>'+
+    (state.cidade?secaoCidadeDeputado(r):'')+
     '<div class="sec"><h3>Top 10 municípios</h3>'+(barras||'<div class="placeholder">Sem votos por município.</div>')+'</div>'+
     '<div class="sec"><h3>Evolução entre eleições</h3>'+evol+'</div>'+
     (r.naoReconhecidos.length?'<div class="avisos">⚠ Municípios não reconhecidos neste registro: '+r.naoReconhecidos.join(', ')+'</div>':'');
+  if(state.cidade) ligarCliquesCidade(el);
 }
 
 /* ---------- visão geral de gastos (quadro central) ---------- */
@@ -6175,6 +6280,7 @@ function aplicarAba(a){
   document.getElementById('gastosOverview').style.display = a==='gastos'?'':'none';
   document.getElementById('campanhaOverview').style.display = a==='campanha'?'':'none';
   document.getElementById('sitSel').style.display = a==='gastos'?'none':'';
+  document.getElementById('buscaCidade').style.display = mapa?'':'none';
   document.getElementById('abaHint').textContent =
     a==='gastos' ? 'Fontes: CEAP/Câmara (federais) e gabinetes/ALESC (estaduais) · o ano selecionado indica a eleição que abriu a legislatura'
     : a==='campanha' ? 'Fonte: prestação de contas eleitorais ao TSE · quanto cada candidato arrecadou e gastou para se eleger'
@@ -6198,6 +6304,34 @@ document.getElementById('sitSel').onchange=e=>{ state.sit=e.target.value; refilt
 document.getElementById('partidoSel').onchange=e=>{ state.partido=e.target.value; refiltrar(); };
 document.getElementById('busca').oninput=e=>{ state.busca=e.target.value; refiltrar(); };
 document.getElementById('limparSel').onclick=()=>selecionar(null);
+/* busca de cidade: autocompletar com as 295 cidades; aceita sem acentos e início do nome */
+const cidadesOrd=[...geoPorCod.values()].sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
+document.getElementById('listaCidades').innerHTML=
+  cidadesOrd.map(c=>'<option value="'+c.nome+'"></option>').join('');
+function acharCidade(txt, parcial){
+  const n=norm(txt).trim();
+  if(!n) return null;
+  const exata=geoPorNome.get(n);
+  if(exata) return exata.cod;
+  if(!parcial) return undefined;
+  const c=cidadesOrd.find(c=>norm(c.nome).startsWith(n)) || cidadesOrd.find(c=>norm(c.nome).includes(n));
+  return c ? c.cod : undefined;
+}
+const buscaCidade=document.getElementById('buscaCidade');
+buscaCidade.addEventListener('input',()=>{
+  const cod=acharCidade(buscaCidade.value,false);
+  if(cod===null){ if(state.cidade) selecionarCidade(null); }
+  else if(cod && cod!==state.cidade){ state.cidade=cod; renderPainel(); pintarMapa(); mostrarPainelNoCelular(); }
+});
+/* no celular o painel fica abaixo do mapa e da lista: leva o leitor até ele */
+function mostrarPainelNoCelular(){
+  if(innerWidth<=760) document.getElementById('painel').scrollIntoView({behavior:'smooth', block:'start'});
+}
+buscaCidade.addEventListener('keydown',e=>{
+  if(e.key!=='Enter') return;
+  const cod=acharCidade(buscaCidade.value,true);
+  if(cod){ selecionarCidade(cod); buscaCidade.blur(); mostrarPainelNoCelular(); }
+});
 document.getElementById('visaoSeg').querySelectorAll('button').forEach(b=>{
   b.onclick=()=>{
     state.visao=b.dataset.v;
